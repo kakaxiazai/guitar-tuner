@@ -1,11 +1,13 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import TunerDisplay from '../components/tuner/TunerDisplay';
 import NoteDisplay from '../components/tuner/NoteDisplay';
 import StringSelector from '../components/tuner/StringSelector';
 import TunerModeSwitch from '../components/tuner/TunerModeSwitch';
-import { Audio } from 'expo-av';
+import { usePitchDetection } from '../hooks/usePitchDetection';
+import { AudioCapture } from '../audio/AudioCapture';
+import { SoundGenerator } from '../audio/SoundGenerator';
 
 export default function TunerScreen() {
   const [mode, setMode] = useState<'auto' | 'manual'>('auto');
@@ -13,52 +15,94 @@ export default function TunerScreen() {
   const [frequency, setFrequency] = useState<number | null>(null);
   const [note, setNote] = useState<string>('');
   const [cents, setCents] = useState<number>(0);
-  const [isRecording, setIsRecording] = useState<boolean>(false);
 
-  // 吉他标准调弦频率
-  const stringFrequencies = {
-    6: 82.41, // E2
-    5: 110.00, // A2
-    4: 146.83, // D3
-    3: 196.00, // G3
-    2: 246.94, // B3
-    1: 329.63, // E4
-  };
+  // 音高检测 Hook
+  const {
+    frequency: detectedFrequency,
+    note: detectedNote,
+    cents: detectedCents,
+    status,
+    processAudioData,
+    clear,
+  } = usePitchDetection();
+
+  // 音频采集实例
+  const audioCaptureRef = useRef<AudioCapture | null>(null);
+  const [isCapturing, setIsCapturing] = useState<boolean>(false);
+
+  // 播放参考音
+  const soundGeneratorRef = useRef(new SoundGenerator());
+
+  // 初始化音频采集
+  useEffect(() => {
+    audioCaptureRef.current = new AudioCapture(
+      undefined, // 使用默认配置
+      {
+        onAudioData: (data: Float32Array) => {
+          // 当音频数据到达时，调用音高检测
+          processAudioData(data);
+        },
+        onError: (error) => {
+          console.error('音频采集错误:', error);
+          Alert.alert('错误', `音频采集失败: ${error.message}`);
+        },
+      }
+    );
+
+    return () => {
+      if (audioCaptureRef.current) {
+        audioCaptureRef.current.release();
+      }
+    };
+  }, []);
+
+  // 处理音频数据并更新 UI
+  useEffect(() => {
+    if (mode === 'auto' && isCapturing && detectedFrequency) {
+      setFrequency(detectedFrequency);
+      setNote(detectedNote || '');
+      setCents(detectedCents);
+    }
+  }, [mode, isCapturing, detectedFrequency, detectedNote, detectedCents]);
 
   // 播放参考音
   const playReferenceTone = async () => {
     try {
-      const { sound } = await Audio.Sound.createAsync(
-        {
-          uri: `https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=sine%20wave%20${stringFrequencies[selectedString]}Hz&image_size=square`,
-        },
-        { shouldPlay: true }
-      );
-      await sound.playAsync();
+      await soundGeneratorRef.current.playGuitarString(selectedString);
     } catch (error) {
-      console.error('Error playing reference tone:', error);
+      console.error('播放参考音失败:', error);
+      Alert.alert('错误', '播放参考音失败');
     }
   };
 
-  // 模拟音频检测
-  useEffect(() => {
-    if (mode === 'auto' && isRecording) {
-      const interval = setInterval(() => {
-        // 模拟频率检测
-        const mockFreq = stringFrequencies[selectedString] + (Math.random() - 0.5) * 5;
-        setFrequency(mockFreq);
-        
-        // 计算音分偏差
-        const centsDeviation = 1200 * Math.log2(mockFreq / stringFrequencies[selectedString]);
-        setCents(Math.round(centsDeviation));
-        
-        // 确定音符
-        setNote(['E2', 'A2', 'D3', 'G3', 'B3', 'E4'][6 - selectedString]);
-      }, 100);
-
-      return () => clearInterval(interval);
+  // 开始/停止采集
+  const toggleRecording = async () => {
+    if (isCapturing) {
+      if (audioCaptureRef.current) {
+        await audioCaptureRef.current.stop();
+      }
+      setIsCapturing(false);
+      clear();
+      setFrequency(null);
+      setNote('');
+      setCents(0);
+    } else {
+      if (audioCaptureRef.current) {
+        const success = await audioCaptureRef.current.start();
+        setIsCapturing(success);
+        if (!success) {
+          Alert.alert('错误', '无法启动音频采集，请检查麦克风权限');
+        }
+      }
     }
-  }, [mode, isRecording, selectedString]);
+  };
+
+  // 组件卸载时释放资源
+  useEffect(() => {
+    return () => {
+      soundGeneratorRef.current.release();
+    };
+  }, []);
 
   return (
     <View style={styles.container}>
@@ -67,27 +111,42 @@ export default function TunerScreen() {
         <TunerModeSwitch mode={mode} onModeChange={setMode} />
       </View>
 
-      <View style={styles.mainContent}>
-        <TunerDisplay frequency={frequency} cents={cents} note={note} />
-        <NoteDisplay note={note} frequency={frequency} cents={cents} />
-      </View>
-
-      <View style={styles.footer}>
-        {mode === 'manual' && (
+      <ScrollView style={styles.mainContent}>
+        {mode === 'auto' ? (
+          // 自动调音模式
+          <>
+            <TunerDisplay frequency={frequency} cents={cents} note={note} />
+            <NoteDisplay note={note} frequency={frequency} cents={cents} />
+            {isCapturing && frequency && (
+              <Text style={styles.statusText}>
+                {status === 'perfect' && '✓ 完美音准！'}
+                {status === 'good' && '↑ 接近音准'}
+                {status === 'warning' && '↓ 需要调整'}
+                {status === 'error' && '请拨动琴弦'}
+              </Text>
+            )}
+          </>
+        ) : (
+          // 手动调音模式
           <>
             <StringSelector selectedString={selectedString} onStringChange={setSelectedString} />
             <TouchableOpacity style={styles.playButton} onPress={playReferenceTone}>
               <Ionicons name="play" size={24} color="white" />
               <Text style={styles.playButtonText}>播放参考音</Text>
             </TouchableOpacity>
+            <NoteDisplay note={note} frequency={frequency} cents={cents} />
+            <Text style={styles.hintText}>拨动琴弦并调节直到指针在中间</Text>
           </>
         )}
-        <TouchableOpacity 
-          style={[styles.recordButton, isRecording && styles.recordingButton]}
-          onPress={() => setIsRecording(!isRecording)}
+      </ScrollView>
+
+      <View style={styles.footer}>
+        <TouchableOpacity
+          style={[styles.recordButton, isCapturing && styles.recordingButton]}
+          onPress={toggleRecording}
         >
-          <Ionicons name={isRecording ? "stop" : "mic"} size={24} color="white" />
-          <Text style={styles.recordButtonText}>{isRecording ? "停止" : "开始"}</Text>
+          <Ionicons name={isCapturing ? "stop" : "mic"} size={24} color="white" />
+          <Text style={styles.recordButtonText}>{isCapturing ? "停止" : "开始"}</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -106,6 +165,10 @@ const styles = StyleSheet.create({
     padding: 20,
     backgroundColor: 'white',
     elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
   },
   title: {
     fontSize: 24,
@@ -114,15 +177,26 @@ const styles = StyleSheet.create({
   },
   mainContent: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
+  },
+  statusText: {
+    marginTop: 20,
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#27ae60',
+    textAlign: 'center',
+  },
+  hintText: {
+    marginTop: 20,
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
   },
   footer: {
     padding: 20,
     backgroundColor: 'white',
     borderTopWidth: 1,
     borderTopColor: '#e0e0e0',
+    alignItems: 'center',
   },
   playButton: {
     flexDirection: 'row',
@@ -131,7 +205,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#3498db',
     padding: 15,
     borderRadius: 8,
-    marginBottom: 10,
+    marginBottom: 20,
+    marginHorizontal: 20,
   },
   playButtonText: {
     color: 'white',
@@ -145,6 +220,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#e74c3c',
     padding: 15,
     borderRadius: 8,
+    width: 120,
   },
   recordingButton: {
     backgroundColor: '#c0392b',

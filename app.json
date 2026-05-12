@@ -18,7 +18,8 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSMicrophoneUsageDescription": "此应用需要访问麦克风以进行吉他调音"
-      }
+      },
+      "bundleIdentifier": "com.guitartuner.app"
     },
     "android": {
       "adaptiveIcon": {
@@ -27,10 +28,19 @@
       },
       "permissions": [
         "RECORD_AUDIO"
-      ]
+      ],
+      "package": "com.kakaxiazai.guitartuner"
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "13f071fb-7286-4719-a225-ca51afde172b"
+      }
+    },
+    "plugins": [
+      "expo-font"
+    ]
   }
 }

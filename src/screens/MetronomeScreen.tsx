@@ -1,108 +1,28 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Slider } from 'react-native';
+import React from 'react';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import BeatIndicator from '../components/metronome/BeatIndicator';
 import TimeSignatureSelector from '../components/metronome/TimeSignatureSelector';
 import SubdivisionSelector from '../components/metronome/SubdivisionSelector';
 import SoundTypeSelector from '../components/metronome/SoundTypeSelector';
 import TapTempoButton from '../components/metronome/TapTempoButton';
-import { Audio } from 'expo-av';
+import { useMetronome } from '../hooks/useMetronome';
 
 export default function MetronomeScreen() {
-  const [bpm, setBpm] = useState<number>(120);
-  const [timeSignature, setTimeSignature] = useState<{ numerator: number; denominator: number }>({ numerator: 4, denominator: 4 });
-  const [subdivision, setSubdivision] = useState<number>(1);
-  const [soundType, setSoundType] = useState<string>('woodblock');
-  const [isPlaying, setIsPlaying] = useState<boolean>(false);
-  const [currentBeat, setCurrentBeat] = useState<number>(1);
-  const [tapTimes, setTapTimes] = useState<number[]>([]);
-  const [showTapTempo, setShowTapTempo] = useState<boolean>(false);
-
-  const soundRef = useRef<Audio.Sound | null>(null);
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
-  const lastTapRef = useRef<number>(0);
-
-  // 播放节拍声音
-  const playBeat = async (isAccent: boolean) => {
-    try {
-      // 停止之前的声音
-      if (soundRef.current) {
-        await soundRef.current.unloadAsync();
-      }
-
-      // 创建新的声音
-      const { sound } = await Audio.Sound.createAsync(
-        {
-          uri: `https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=${soundType} ${isAccent ? 'accent' : 'normal'} beat&image_size=square`,
-        },
-        { shouldPlay: true, volume: isAccent ? 1.0 : 0.7 }
-      );
-
-      soundRef.current = sound;
-    } catch (error) {
-      console.error('Error playing beat:', error);
-    }
-  };
-
-  // 启动节拍器
-  const startMetronome = () => {
-    setIsPlaying(true);
-    setCurrentBeat(1);
-
-    const interval = setInterval(() => {
-      const isAccent = currentBeat === 1;
-      playBeat(isAccent);
-
-      setCurrentBeat((prev) => {
-        if (prev >= timeSignature.numerator) {
-          return 1;
-        }
-        return prev + 1;
-      });
-    }, 60000 / bpm);
-
-    intervalRef.current = interval;
-  };
-
-  // 停止节拍器
-  const stopMetronome = async () => {
-    setIsPlaying(false);
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-    if (soundRef.current) {
-      await soundRef.current.unloadAsync();
-      soundRef.current = null;
-    }
-  };
-
-  // Tap Tempo功能
-  const handleTap = () => {
-    const now = Date.now();
-    if (lastTapRef.current > 0) {
-      const interval = now - lastTapRef.current;
-      const newBpm = Math.round(60000 / interval);
-      setBpm(newBpm);
-      setShowTapTempo(true);
-      
-      // 3秒后隐藏Tap Tempo提示
-      setTimeout(() => setShowTapTempo(false), 3000);
-    }
-    lastTapRef.current = now;
-  };
-
-  // 清理
-  useEffect(() => {
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
-      if (soundRef.current) {
-        soundRef.current.unloadAsync();
-      }
-    };
-  }, []);
+  const {
+    bpm,
+    timeSignature,
+    subdivision,
+    soundType,
+    isPlaying,
+    currentBeat,
+    totalBeats,
+    toggle,
+    setBpmValue,
+    setTimeSignature,
+    setSubdivisionValue,
+    setSoundTypeValue,
+  } = useMetronome();
 
   return (
     <View style={styles.container}>
@@ -111,58 +31,60 @@ export default function MetronomeScreen() {
       </View>
 
       <View style={styles.mainContent}>
-        <BeatIndicator 
-          currentBeat={currentBeat} 
-          totalBeats={timeSignature.numerator} 
-          isPlaying={isPlaying} 
+        <BeatIndicator
+          currentBeat={currentBeat}
+          totalBeats={totalBeats}
+          isPlaying={isPlaying}
         />
 
         <View style={styles.bpmContainer}>
           <Text style={styles.bpmLabel}>速度 (BPM)</Text>
           <Text style={styles.bpmValue}>{bpm}</Text>
-          <Slider
-            style={styles.slider}
-            minimumValue={20}
-            maximumValue={280}
-            value={bpm}
-            onValueChange={setBpm}
-            minimumTrackTintColor="#3498db"
-            maximumTrackTintColor="#e0e0e0"
-          />
+          <View style={styles.bpmControls}>
+            <TouchableOpacity
+              style={styles.bpmButton}
+              onPress={() => setBpmValue(bpm - 1)}
+            >
+              <Ionicons name="remove" size={24} color="white" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.bpmButton}
+              onPress={() => setBpmValue(bpm + 1)}
+            >
+              <Ionicons name="add" size={24} color="white" />
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.bpmRange}>
+            {20} - 280 BPM
+          </Text>
         </View>
 
-        {showTapTempo && (
-          <View style={styles.tapTempoIndicator}>
-            <Text style={styles.tapTempoText}>Tap Tempo: {bpm} BPM</Text>
-          </View>
-        )}
-
         <View style={styles.controlsContainer}>
-          <TimeSignatureSelector 
-            timeSignature={timeSignature} 
-            onTimeSignatureChange={setTimeSignature} 
+          <TimeSignatureSelector
+            timeSignature={timeSignature}
+            onTimeSignatureChange={setTimeSignature}
           />
-          <SubdivisionSelector 
-            subdivision={subdivision} 
-            onSubdivisionChange={setSubdivision} 
+          <SubdivisionSelector
+            subdivision={subdivision}
+            onSubdivisionChange={setSubdivisionValue}
           />
-          <SoundTypeSelector 
-            soundType={soundType} 
-            onSoundTypeChange={setSoundType} 
+          <SoundTypeSelector
+            soundType={soundType}
+            onSoundTypeChange={setSoundTypeValue}
           />
         </View>
       </View>
 
       <View style={styles.footer}>
-        <TapTempoButton onTap={handleTap} />
-        <TouchableOpacity 
+        <TapTempoButton onTempoChange={setBpmValue} />
+        <TouchableOpacity
           style={[styles.playButton, isPlaying && styles.stopButton]}
-          onPress={isPlaying ? stopMetronome : startMetronome}
+          onPress={toggle}
         >
-          <Ionicons 
-            name={isPlaying ? "stop" : "play"} 
-            size={32} 
-            color="white" 
+          <Ionicons
+            name={isPlaying ? "stop" : "play"}
+            size={32}
+            color="white"
           />
           <Text style={styles.playButtonText}>{isPlaying ? "停止" : "开始"}</Text>
         </TouchableOpacity>
@@ -180,6 +102,10 @@ const styles = StyleSheet.create({
     padding: 20,
     backgroundColor: 'white',
     elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
   },
   title: {
     fontSize: 24,
@@ -206,22 +132,24 @@ const styles = StyleSheet.create({
     fontSize: 48,
     fontWeight: 'bold',
     color: '#333',
-    marginBottom: 20,
+    marginBottom: 10,
   },
-  slider: {
-    width: '100%',
+  bpmControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  bpmButton: {
+    width: 40,
     height: 40,
-  },
-  tapTempoIndicator: {
-    backgroundColor: '#3498db',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
     borderRadius: 20,
-    marginBottom: 20,
+    backgroundColor: '#3498db',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  tapTempoText: {
-    color: 'white',
-    fontWeight: 'bold',
+  bpmRange: {
+    fontSize: 14,
+    color: '#999',
   },
   controlsContainer: {
     width: '100%',
