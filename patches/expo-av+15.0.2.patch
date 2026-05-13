@@ -1,0 +1,46 @@
+diff --git a/node_modules/expo-av/android/src/main/java/expo/modules/av/ViewUtils.kt b/node_modules/expo-av/android/src/main/java/expo/modules/av/ViewUtils.kt
+index d18b58a..b41c396 100644
+--- a/node_modules/expo-av/android/src/main/java/expo/modules/av/ViewUtils.kt
++++ b/node_modules/expo-av/android/src/main/java/expo/modules/av/ViewUtils.kt
+@@ -17,17 +17,9 @@ object ViewUtils {
+ 
+   @UiThread
+   private fun tryRunWithVideoViewOnUiThread(moduleRegistry: ModuleRegistry, viewTag: Int, callback: VideoViewCallback, promise: Promise) {
+-    try {
+-      val videoWrapperView = moduleRegistry.getModule(UIManager::class.java).resolveView(viewTag) as VideoViewWrapper?
+-      val videoView = videoWrapperView?.videoViewInstance
+-      if (videoView != null) {
+-        callback.runWithVideoView(videoView)
+-      } else {
+-        promise.reject("E_VIDEO_TAGINCORRECT", "Invalid view returned from registry.")
+-      }
+-    } catch (e: IllegalViewOperationException) {
+-      promise.reject("E_VIDEO_TAGINCORRECT", "Invalid view returned from registry.")
+-    }
++    // resolveView is deprecated in newer React Native versions
++    // Video functionality is not used in this project (guitar tuner)
++    promise.reject("E_VIDEO_TAGINCORRECT", "Video view resolution is disabled - not needed for this project.")
+   }
+ 
+   /**
+@@ -48,17 +40,9 @@ object ViewUtils {
+ 
+   @UiThread
+   private fun tryRunWithVideoViewOnUiThread(moduleRegistry: ModuleRegistry, viewTag: Int, callback: VideoViewCallback, promise: expo.modules.kotlin.Promise) {
+-    try {
+-      val videoWrapperView = moduleRegistry.getModule(UIManager::class.java).resolveView(viewTag) as VideoViewWrapper?
+-      val videoView = videoWrapperView?.videoViewInstance
+-      if (videoView != null) {
+-        callback.runWithVideoView(videoView)
+-      } else {
+-        promise.reject("E_VIDEO_TAGINCORRECT", "Invalid view returned from registry.", null)
+-      }
+-    } catch (e: IllegalViewOperationException) {
+-      promise.reject("E_VIDEO_TAGINCORRECT", "Invalid view returned from registry.", null)
+-    }
++    // resolveView is deprecated in newer React Native versions
++    // Video functionality is not used in this project (guitar tuner)
++    promise.reject("E_VIDEO_TAGINCORRECT", "Video view resolution is disabled - not needed for this project.", null)
+   }
+ 
+   /**
