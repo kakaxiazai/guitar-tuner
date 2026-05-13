@@ -8,7 +8,7 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "postinstall": "echo 'Running patch-package...' && patch-package && echo 'patch-package completed successfully.'"
+    "postinstall": "patch-package"
   },
   "keywords": [
     "guitar",
