@@ -18,6 +18,12 @@ allprojects {
     mavenCentral()
     maven { url 'https://www.jitpack.io' }
   }
+  // 强制所有子项目使用兼容的AGP版本，覆盖react-native-safe-area-context中的旧版本
+  configurations.all {
+    resolutionStrategy {
+      force 'com.android.tools.build:gradle:8.3.2'
+    }
+  }
 }
 
 apply plugin: "expo-root-project"
