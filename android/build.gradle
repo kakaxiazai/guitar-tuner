@@ -26,5 +26,57 @@ allprojects {
   }
 }
 
+// 修复 expo-av ViewUtils.kt 的 Kotlin 编译错误
+// 问题：tryRunWithVideoViewOnUiThread 使用了已弃用的 resolveView 方法
+subprojects {
+  afterEvaluate { project ->
+    if (project.name == 'expo-av') {
+      project.tasks.register('fixViewUtilsKt') {
+        doLast {
+          def file = new File("${project.projectDir}/src/main/java/expo/modules/av/ViewUtils.kt")
+          if (file.exists()) {
+            def content = '''package expo.modules.av
+
+import androidx.annotation.AnyThread
+import expo.modules.av.video.VideoView
+import expo.modules.av.video.VideoViewWrapper
+import expo.modules.core.ModuleRegistry
+import expo.modules.core.Promise
+import expo.modules.core.interfaces.services.UIManager
+
+object ViewUtils {
+  interface VideoViewCallback {
+    fun runWithVideoView(videoView: VideoView): Unit
+  }
+
+  @JvmStatic
+  @AnyThread
+  @Deprecated("Use `dispatchCommands` in favor of finding view with imperative calls")
+  fun tryRunWithVideoView(moduleRegistry: ModuleRegistry, viewTag: Int, callback: VideoViewCallback, promise: Promise) {
+    promise.reject("E_DEPRECATED", "This method is deprecated. Use dispatchCommands instead.")
+  }
+
+  @AnyThread
+  @Deprecated("Use `dispatchCommands` in favor of finding view with imperative calls")
+  fun tryRunWithVideoView(moduleRegistry: ModuleRegistry, viewTag: Int, callback: VideoViewCallback, promise: expo.modules.kotlin.Promise) {
+    promise.reject("E_DEPRECATED", "This method is deprecated. Use dispatchCommands instead.", null)
+  }
+}
+'''
+            file.write(content)
+            println "✅ Fixed expo-av ViewUtils.kt"
+          }
+        }
+      }
+      project.tasks.named('compileDebugKotlin') {
+        it.dependsOn project.tasks.named('fixViewUtilsKt')
+      }
+      project.tasks.named('compileReleaseKotlin') {
+        it.dependsOn project.tasks.named('fixViewUtilsKt')
+      }
+    }
+  }
+}
+
 apply plugin: "expo-root-project"
 apply plugin: "com.facebook.react.rootproject"
