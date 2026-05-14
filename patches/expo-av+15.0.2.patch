@@ -1,0 +1,81 @@
+diff --git a/node_modules/expo-av/android/src/main/java/expo/modules/av/ViewUtils.kt b/node_modules/expo-av/android/src/main/java/expo/modules/av/ViewUtils.kt
+index d18b58a..a6a481b 100644
+--- a/node_modules/expo-av/android/src/main/java/expo/modules/av/ViewUtils.kt
++++ b/node_modules/expo-av/android/src/main/java/expo/modules/av/ViewUtils.kt
+@@ -1,9 +1,6 @@
+ package expo.modules.av
+ 
+ import androidx.annotation.AnyThread
+-import androidx.annotation.UiThread
+-import com.facebook.react.bridge.UiThreadUtil
+-import com.facebook.react.uimanager.IllegalViewOperationException
+ import expo.modules.av.video.VideoView
+ import expo.modules.av.video.VideoViewWrapper
+ import expo.modules.core.ModuleRegistry
+@@ -15,64 +12,16 @@ object ViewUtils {
+     fun runWithVideoView(videoView: VideoView): Unit
+   }
+ 
+-  @UiThread
+-  private fun tryRunWithVideoViewOnUiThread(moduleRegistry: ModuleRegistry, viewTag: Int, callback: VideoViewCallback, promise: Promise) {
+-    try {
+-      val videoWrapperView = moduleRegistry.getModule(UIManager::class.java).resolveView(viewTag) as VideoViewWrapper?
+-      val videoView = videoWrapperView?.videoViewInstance
+-      if (videoView != null) {
+-        callback.runWithVideoView(videoView)
+-      } else {
+-        promise.reject("E_VIDEO_TAGINCORRECT", "Invalid view returned from registry.")
+-      }
+-    } catch (e: IllegalViewOperationException) {
+-      promise.reject("E_VIDEO_TAGINCORRECT", "Invalid view returned from registry.")
+-    }
+-  }
+-
+-  /**
+-   * Rejects the promise if the VideoView is not found, otherwise executes the callback.
+-   */
+   @JvmStatic
+   @AnyThread
+   @Deprecated("Use `dispatchCommands` in favor of finding view with imperative calls")
+   fun tryRunWithVideoView(moduleRegistry: ModuleRegistry, viewTag: Int, callback: VideoViewCallback, promise: Promise) {
+-    if (UiThreadUtil.isOnUiThread()) {
+-      tryRunWithVideoViewOnUiThread(moduleRegistry, viewTag, callback, promise)
+-    } else {
+-      UiThreadUtil.runOnUiThread {
+-        tryRunWithVideoViewOnUiThread(moduleRegistry, viewTag, callback, promise)
+-      }
+-    }
+-  }
+-
+-  @UiThread
+-  private fun tryRunWithVideoViewOnUiThread(moduleRegistry: ModuleRegistry, viewTag: Int, callback: VideoViewCallback, promise: expo.modules.kotlin.Promise) {
+-    try {
+-      val videoWrapperView = moduleRegistry.getModule(UIManager::class.java).resolveView(viewTag) as VideoViewWrapper?
+-      val videoView = videoWrapperView?.videoViewInstance
+-      if (videoView != null) {
+-        callback.runWithVideoView(videoView)
+-      } else {
+-        promise.reject("E_VIDEO_TAGINCORRECT", "Invalid view returned from registry.", null)
+-      }
+-    } catch (e: IllegalViewOperationException) {
+-      promise.reject("E_VIDEO_TAGINCORRECT", "Invalid view returned from registry.", null)
+-    }
++    promise.reject("E_DEPRECATED", "This method is deprecated. Use dispatchCommands instead.")
+   }
+ 
+-  /**
+-   * Rejects the promise if the VideoView is not found, otherwise executes the callback.
+-   */
+   @AnyThread
+   @Deprecated("Use `dispatchCommands` in favor of finding view with imperative calls")
+   fun tryRunWithVideoView(moduleRegistry: ModuleRegistry, viewTag: Int, callback: VideoViewCallback, promise: expo.modules.kotlin.Promise) {
+-    if (UiThreadUtil.isOnUiThread()) {
+-      tryRunWithVideoViewOnUiThread(moduleRegistry, viewTag, callback, promise)
+-    } else {
+-      UiThreadUtil.runOnUiThread {
+-        tryRunWithVideoViewOnUiThread(moduleRegistry, viewTag, callback, promise)
+-      }
+-    }
++    promise.reject("E_DEPRECATED", "This method is deprecated. Use dispatchCommands instead.", null)
+   }
+ }

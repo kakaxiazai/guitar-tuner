@@ -8,7 +8,7 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "postinstall": "node postinstall.js"
+    "postinstall": "patch-package"
   },
   "keywords": [
     "guitar",
@@ -40,6 +40,7 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.10",
+    "patch-package": "^8.0.1",
     "typescript": "~5.9.2"
   }
 }
