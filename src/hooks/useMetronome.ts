@@ -17,7 +17,7 @@ export function useMetronome() {
 
   const soundGeneratorRef = useRef<SoundGenerator | null>(null);
   const nextNoteTimeRef = useRef<number>(0);
-  const timerIDRef = useRef<NodeJS.Timeout | null>(null);
+  const timerIDRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const current16thNoteRef = useRef<number>(0);
   const lookaheadRef = useRef<number>(25.0); // ms
   const scheduleAheadTimeRef = useRef<number>(0.1); // s
@@ -172,7 +172,7 @@ export function useMetronome() {
     stop,
     toggle,
     setBpmValue,
-    setTimeSignature,
+    setTimeSignature: setTimeSignatureValue,
     setSubdivisionValue,
     setSoundTypeValue,
   };

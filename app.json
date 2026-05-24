@@ -40,7 +40,9 @@
       }
     },
     "plugins": [
-      "expo-font"
+      "expo-font",
+      "expo-audio",
+      "expo-status-bar"
     ]
   }
 }

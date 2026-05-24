@@ -17,16 +17,14 @@ export function usePitchDetection() {
   const pitchDetectorRef = useRef<PitchDetector | null>(null);
   const historyRef = useRef<number[]>([]);
 
-  // 初始化音高检测器
-  const initializePitchDetector = useCallback(() => {
-    if (!pitchDetectorRef.current) {
-      pitchDetectorRef.current = new PitchDetector(TUNER_CONFIG.SAMPLE_RATE);
-    }
+  useEffect(() => {
+    pitchDetectorRef.current = new PitchDetector(TUNER_CONFIG.SAMPLE_RATE);
+    return () => {
+      pitchDetectorRef.current = null;
+      historyRef.current = [];
+    };
   }, []);
 
-  /**
-   * 处理音频数据
-   */
   const processAudioData = useCallback((data: Float32Array) => {
     if (!pitchDetectorRef.current) {
       return;
@@ -104,16 +102,6 @@ export function usePitchDetection() {
    */
   const setTargetFrequency = useCallback((freq: number) => {
     // 预留接口，暂不使用
-  }, []);
-
-  /**
-   * 释放资源
-   */
-  useEffect(() => {
-    return () => {
-      pitchDetectorRef.current = null;
-      historyRef.current = [];
-    };
   }, []);
 
   return {

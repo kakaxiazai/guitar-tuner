@@ -12,7 +12,7 @@ export function useAudioCapture() {
   const [audioLevel, setAudioLevel] = useState<number>(0);
 
   const recordingRef = useRef<Audio.Recording | null>(null);
-  const audioLevelIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const audioLevelIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pitchDetectorRef = useRef<PitchDetector | null>(null);
   const historyRef = useRef<number[]>([]);
 
