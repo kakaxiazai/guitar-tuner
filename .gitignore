@@ -1,2 +1,59 @@
+# Dependencies
 node_modules
+.pnp
+.pnp.js
+
+# Expo
+.expo
+.expo-shared
+dist
+web-build
+
+# Native
+*.log
+.DS_Store
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+
+# Android
+android/.gradle
+android/build
+android/app/build
+android/app/debug
+android/app/release
+android/local.properties
+
+# iOS
+ios/Pods
+ios/build
+ios/build/Generated
+ios/*.xcuserstate
+ios/xcuserdata
+
+# macOS
+.DS_Store
+._*
+
+# IDE
+.vscode
+.idea
+.claude
+.codebuddy
+*.swp
+*.swo
+
+# GitNexus cache (代码索引缓存，可重建)
 .gitnexus
+
+# EAS
+.easignore
+
+# 不要忽略 .workbuddy/memory（项目记忆）
+!.workbuddy
+.workbuddy/*
+!.workbuddy/memory
+!.workbuddy/skills

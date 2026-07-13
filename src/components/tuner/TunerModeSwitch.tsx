@@ -15,6 +15,7 @@ export default function TunerModeSwitch({ mode, onModeChange }: TunerModeSwitchP
           mode === 'auto' && styles.activeButton,
         ]}
         onPress={() => onModeChange('auto')}
+        activeOpacity={0.7}
       >
         <Text
           style={[
@@ -31,6 +32,7 @@ export default function TunerModeSwitch({ mode, onModeChange }: TunerModeSwitchP
           mode === 'manual' && styles.activeButton,
         ]}
         onPress={() => onModeChange('manual')}
+        activeOpacity={0.7}
       >
         <Text
           style={[
@@ -48,25 +50,33 @@ export default function TunerModeSwitch({ mode, onModeChange }: TunerModeSwitchP
 const styles = StyleSheet.create({
   container: {
     flexDirection: 'row',
-    borderRadius: 8,
-    backgroundColor: '#f0f0f0',
+    borderRadius: 10,
+    backgroundColor: '#f0f2f5',
+    padding: 3,
     overflow: 'hidden',
   },
   button: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
     paddingVertical: 8,
-    minWidth: 60,
+    minWidth: 70,
     alignItems: 'center',
+    borderRadius: 8,
   },
   activeButton: {
     backgroundColor: '#3498db',
+    elevation: 1,
+    shadowColor: '#3498db',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.3,
+    shadowRadius: 2,
   },
   buttonText: {
     fontSize: 14,
-    color: '#666',
+    fontWeight: '600',
+    color: '#888',
   },
   activeButtonText: {
     color: 'white',
-    fontWeight: 'bold',
+    fontWeight: '700',
   },
 });

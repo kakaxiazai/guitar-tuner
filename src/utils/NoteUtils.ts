@@ -36,7 +36,7 @@ export const NOTE_NAMES = [
  */
 export function getNoteFromFrequency(frequency: number): { note: string; octave: number; midiNote: number } {
   const A4 = 440;
-  const A4Index = 57; // MIDI note number for A4
+  const A4Index = 69; // MIDI note number for A4
 
   const midiNote = Math.round(12 * Math.log2(frequency / A4) + A4Index);
 

@@ -1,13 +1,21 @@
 /**
- * 音高检测类 - 使用自相关算法
- * 支持吉他频率范围：80Hz - 400Hz
+ * 音高检测类 - 使用 YIN 算法（改进的自相关）
+ * YIN 是专业调音器（如 Fine Tuner）广泛使用的音高检测算法
+ * 参考: Cheveigné, A., & Kawahara, H. (2002). YIN, a fundamental frequency estimator
  */
 export class PitchDetector {
   private sampleRate = 44100;
-  private minFreq = 80;  // 最低频率 (吉他低音弦)
-  private maxFreq = 400; // 最高频率 (吉他高音弦)
+  private minFreq = 75;    // 最低频率 (吉他低音弦 E2)
+  private maxFreq = 1200;  // 最高频率 (包含泛音以提高检测精度)
   private minPeriod: number;
   private maxPeriod: number;
+
+  // YIN 算法阈值 - 低阈值 = 更严格检测（减少误报）
+  private readonly YIN_THRESHOLD = 0.15;
+  // 信号门限
+  private readonly RMS_THRESHOLD = 0.008;
+  // 置信度阈值
+  private readonly CONFIDENCE_THRESHOLD = 0.5;
 
   constructor(sampleRate: number = 44100) {
     this.sampleRate = sampleRate;
@@ -16,39 +24,186 @@ export class PitchDetector {
   }
 
   /**
-   * 处理音频数据并检测音高
+   * 处理音频数据并检测音高（YIN 算法）
    * @param samples 音频采样数据 (Float32Array)
-   * @returns 检测到的频率，如果无法检测返回 null
+   * @param autoGain 是否启用自动增益
+   * @returns { frequency: number | null, confidence: number } 检测到的频率和置信度
    */
-  processAudioData(samples: Float32Array): number | null {
+  processAudioData(samples: Float32Array, autoGain: boolean = false): { frequency: number | null; confidence: number } {
     if (samples.length < this.minPeriod * 2) {
-      return null;
+      return { frequency: null, confidence: 0 };
     }
 
-    // 1. 预处理：加窗（Hann window）
-    const windowedSamples = this.applyHannWindow(samples);
-
-    // 2. 计算自相关函数
-    const autocorr = this.computeAutocorrelation(windowedSamples);
-
-    // 3. 寻找第一个峰值
-    const lag = this.findFirstPeak(autocorr);
-
-    if (lag === null || lag < this.minPeriod || lag > this.maxPeriod) {
-      return null;
+    let processedSamples = samples;
+    if (autoGain) {
+      processedSamples = this.applyAutoGain(samples);
     }
 
-    // 4. 抛物线插值提高精度
-    const betterLag = this.parabolicInterpolation(autocorr, lag);
+    // 信号门限：如果信号能量太低，跳过检测
+    const rms = this.calculateRMS(processedSamples);
+    if (rms < this.RMS_THRESHOLD) {
+      return { frequency: null, confidence: 0 };
+    }
 
-    // 5. 转换为频率
+    // 1. 预处理：加窗（Hann window）减少频谱泄漏
+    const windowedSamples = this.applyHannWindow(processedSamples);
+
+    // 2. 计算差分函数（Difference Function）
+    const diff = this.computeDifference(windowedSamples);
+
+    // 3. 累积均值归一化（CMNDF）- YIN 的核心改进
+    const cmndf = this.computeCMNDF(diff);
+
+    // 4. 使用绝对阈值寻找第一个谷值
+    const result = this.findPitch(cmndf);
+
+    if (result === null) {
+      return { frequency: null, confidence: 0 };
+    }
+
+    // 5. 抛物线插值提高精度
+    const betterLag = this.parabolicInterpolation(cmndf, result.lag);
+
+    // 6. 转换为频率
     const frequency = this.sampleRate / betterLag;
 
-    return frequency;
+    // 7. 验证频率是否在合理范围内
+    if (frequency < this.minFreq || frequency > this.maxFreq) {
+      return { frequency: null, confidence: 0 };
+    }
+
+    return { frequency, confidence: result.confidence };
   }
 
   /**
-   * 加窗处理
+   * 计算差分函数（Difference Function）
+   * d(tau) = sum of (x[i] - x[i + tau])^2
+   */
+  private computeDifference(signal: Float32Array): Float32Array {
+    const n = signal.length;
+    const diff = new Float32Array(Math.floor(n / 2));
+
+    for (let tau = 0; tau < diff.length; tau++) {
+      let sum = 0;
+      for (let i = 0; i < diff.length; i++) {
+        const delta = signal[i] - signal[i + tau];
+        sum += delta * delta;
+      }
+      diff[tau] = sum;
+    }
+
+    return diff;
+  }
+
+  /**
+   * 累积均值归一化（CMNDF）- YIN 算法核心
+   * cmndf(tau) = d(tau) / ((1/tau) * sum(d(1) to d(tau)))
+   */
+  private computeCMNDF(diff: Float32Array): Float32Array {
+    const cmndf = new Float32Array(diff.length);
+    cmndf[0] = 1; // 避免除零
+
+    let runningSum = 0;
+    for (let tau = 1; tau < diff.length; tau++) {
+      runningSum += diff[tau];
+      cmndf[tau] = runningSum > 0 ? diff[tau] / (runningSum / tau) : 1;
+    }
+
+    return cmndf;
+  }
+
+  /**
+   * 使用绝对阈值寻找第一个谷值
+   * 返回 lag 和置信度
+   */
+  private findPitch(cmndf: Float32Array): { lag: number; confidence: number } | null {
+    const startSearch = Math.max(1, this.minPeriod);
+    const endSearch = Math.min(cmndf.length - 1, this.maxPeriod);
+
+    // 寻找 CMNDF 曲线中第一个低于阈值的点
+    for (let tau = startSearch; tau < endSearch; tau++) {
+      if (cmndf[tau] < this.YIN_THRESHOLD) {
+        // 找到局部最小值
+        if (cmndf[tau] <= cmndf[tau - 1] && cmndf[tau] <= cmndf[tau + 1]) {
+          // 置信度 = 1 - CMNDF 值（越接近 0 越可靠）
+          const confidence = Math.max(0, 1 - cmndf[tau]);
+          if (confidence >= this.CONFIDENCE_THRESHOLD) {
+            return { lag: tau, confidence };
+          }
+        }
+      }
+    }
+
+    // 如果没找到低于阈值的点，尝试找全局最小值
+    let minVal = Infinity;
+    let minTau = -1;
+    for (let tau = startSearch; tau < endSearch; tau++) {
+      if (cmndf[tau] < minVal) {
+        minVal = cmndf[tau];
+        minTau = tau;
+      }
+    }
+
+    if (minTau >= 0) {
+      const confidence = Math.max(0, 1 - minVal) * 0.5; // 降低置信度
+      return { lag: minTau, confidence };
+    }
+
+    return null;
+  }
+
+  /**
+   * 抛物线插值提高精度
+   */
+  private parabolicInterpolation(cmndf: Float32Array, peakIndex: number): number {
+    if (peakIndex <= 0 || peakIndex >= cmndf.length - 1) {
+      return peakIndex;
+    }
+
+    const prev = cmndf[peakIndex - 1];
+    const curr = cmndf[peakIndex];
+    const next = cmndf[peakIndex + 1];
+
+    if (prev === curr || next === curr || (2 * curr - prev - next) === 0) {
+      return peakIndex;
+    }
+
+    const offset = (prev - next) / (2 * (2 * curr - prev - next));
+    return peakIndex + offset;
+  }
+
+  /**
+   * 计算信号 RMS（均方根）电平
+   */
+  private calculateRMS(samples: Float32Array): number {
+    let sum = 0;
+    for (let i = 0; i < samples.length; i++) {
+      sum += samples[i] * samples[i];
+    }
+    return Math.sqrt(sum / samples.length);
+  }
+
+  /**
+   * 自动增益控制
+   */
+  private applyAutoGain(samples: Float32Array): Float32Array {
+    const rms = this.calculateRMS(samples);
+    const targetRMS = 0.3;
+
+    if (rms < 0.005) {
+      return samples;
+    }
+
+    const gain = Math.min(targetRMS / rms, 10);
+    const result = new Float32Array(samples.length);
+    for (let i = 0; i < samples.length; i++) {
+      result[i] = Math.max(-1, Math.min(1, samples[i] * gain));
+    }
+    return result;
+  }
+
+  /**
+   * 加窗处理（Hann window）
    */
   private applyHannWindow(samples: Float32Array): Float32Array {
     const windowed = new Float32Array(samples.length);
@@ -60,69 +215,16 @@ export class PitchDetector {
   }
 
   /**
-   * 计算自相关函数
-   */
-  private computeAutocorrelation(signal: Float32Array): Float32Array {
-    const n = signal.length;
-    const autocorr = new Float32Array(n);
-
-    for (let lag = 0; lag < n; lag++) {
-      let sum = 0;
-      for (let i = 0; i < n - lag; i++) {
-        sum += signal[i] * signal[i + lag];
-      }
-      autocorr[lag] = sum;
-    }
-
-    return autocorr;
-  }
-
-  /**
-   * 寻找第一个显著峰值
-   */
-  private findFirstPeak(autocorr: Float32Array): number | null {
-    // 预处理：去除第一个延迟（通常为零延迟，自相关值最大）
-    const startIndex = Math.floor(this.minPeriod * 0.9);
-
-    let firstPeak = -1;
-    for (let i = startIndex; i < autocorr.length; i++) {
-      if (autocorr[i] > autocorr[i - 1] && autocorr[i] >= autocorr[i + 1]) {
-        firstPeak = i;
-        break;
-      }
-    }
-
-    return firstPeak >= 0 ? firstPeak : null;
-  }
-
-  /**
-   * 抛物线插值提高精度
-   */
-  private parabolicInterpolation(autocorr: Float32Array, peakIndex: number): number {
-    const prev = autocorr[peakIndex - 1];
-    const curr = autocorr[peakIndex];
-    const next = autocorr[peakIndex + 1];
-
-    if (prev === curr || next === curr) {
-      return peakIndex;
-    }
-
-    // 抛物线插值公式
-    const offset = (prev - next) / (2 * (2 * curr - prev - next));
-    return peakIndex + offset;
-  }
-
-  /**
    * 将频率转换为音符名称
    */
   getNoteFromFrequency(frequency: number): { note: string; octave: number; midiNote: number } {
     const A4 = 440;
-    const A4Index = 57; // MIDI note number for A4
+    const A4Index = 69; // MIDI note number for A4
 
     const midiNote = Math.round(12 * Math.log2(frequency / A4) + A4Index);
 
     const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-    const note = noteNames[midiNote % 12];
+    const note = noteNames[((midiNote % 12) + 12) % 12]; // 确保正数
     const octave = Math.floor(midiNote / 12) - 1;
 
     return { note, octave, midiNote };
@@ -154,20 +256,10 @@ export class PitchDetector {
    */
   static getFrequencyFromNote(note: string): number {
     const noteFrequencies: Record<string, number> = {
-      'E2': 82.41,
-      'A2': 110.00,
-      'D3': 146.83,
-      'G3': 196.00,
-      'B3': 246.94,
-      'E4': 329.63,
-      'C4': 261.63,
-      'D4': 293.66,
-      'F4': 349.23,
-      'G4': 392.00,
-      'A4': 440.00,
-      'B4': 493.88,
-      'C5': 523.25,
-      'D5': 587.33,
+      'E2': 82.41, 'A2': 110.00, 'D3': 146.83, 'G3': 196.00,
+      'B3': 246.94, 'E4': 329.63, 'C4': 261.63, 'D4': 293.66,
+      'F4': 349.23, 'G4': 392.00, 'A4': 440.00, 'B4': 493.88,
+      'C5': 523.25, 'D5': 587.33,
     };
     return noteFrequencies[note] || 440;
   }

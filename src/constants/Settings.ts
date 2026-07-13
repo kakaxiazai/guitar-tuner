@@ -15,7 +15,7 @@ export const METRONOME_CONFIG = {
 export const TUNER_CONFIG = {
   SAMPLE_RATE: 44100,
   MIN_FREQ: 80,  // 吉他最低频率
-  MAX_FREQ: 400, // 吉他最高频率
+  MAX_FREQ: 1200, // 吉他最高频率（含泛音，提高检测精度）
   REFERENCE_PITCH: 440, // A4 参考音
   SMOOTHING_WINDOW: 5,  // 频率平滑窗口大小
   STABILITY_THRESHOLD: 10, // 频率稳定性阈值（音分）

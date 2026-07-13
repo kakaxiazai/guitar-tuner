@@ -122,7 +122,7 @@ export function useAudioCapture() {
       return null;
     }
 
-    const frequency = pitchDetectorRef.current.processAudioData(data);
+    const { frequency } = pitchDetectorRef.current.processAudioData(data);
     return frequency;
   }, []);
 
@@ -162,7 +162,7 @@ export function useAudioCapture() {
       if (!pitchDetectorRef.current) {
         return null;
       }
-      const frequency = pitchDetectorRef.current.processAudioData(data);
+      const { frequency } = pitchDetectorRef.current.processAudioData(data);
       return frequency;
     },
     release,

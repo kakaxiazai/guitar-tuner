@@ -37,18 +37,12 @@ export function useMetronome() {
    * 调度节拍
    */
   const scheduleNote = useCallback((beatNumber: number, time: number) => {
-    // 计算是否为重音
     const beatInMeasure = beatNumber % totalBeats;
     const isAccent = beatInMeasure === 0;
+    const isSubdivision = subdivision > 1 && beatNumber % subdivision !== 0;
 
-    // 播放节拍声音
-    soundGeneratorRef.current?.playTone(
-      isAccent ? 800 : 600,
-      0.1
-    );
-
-    // 视觉更新将在 UI 线程中处理
-  }, [totalBeats]);
+    soundGeneratorRef.current?.playMetronomeClick(isAccent, isSubdivision);
+  }, [totalBeats, soundType, subdivision]);
 
   /**
    * 下一个节拍时间计算
@@ -63,8 +57,8 @@ export function useMetronome() {
    * 调度所有即将到来的节拍
    */
   const scheduler = useCallback(() => {
-    // 使用虚拟时间作为当前时间
-    const now = Date.now() / 1000;
+    // 使用音频时间作为当前时间
+    const now = nextNoteTimeRef.current > 0 ? nextNoteTimeRef.current : 0;
     while (nextNoteTimeRef.current < now + scheduleAheadTimeRef.current) {
       const beatNumber = current16thNoteRef.current;
       const beatInMeasure = Math.floor(beatNumber) % totalBeats;
@@ -73,9 +67,9 @@ export function useMetronome() {
 
       nextNote();
 
-      // 检查是否一拍结束
-      if (beatInMeasure === 0) {
-        setCurrentBeat(beatInMeasure + 1);
+      // 更新当前节拍（仅视觉，不阻塞音频调度）
+      if (beatInMeasure === 0 && Math.floor(current16thNoteRef.current) > 0) {
+        setCurrentBeat(Math.floor(current16thNoteRef.current) + 1);
       }
     }
   }, [scheduleNote, nextNote, totalBeats]);
@@ -88,10 +82,10 @@ export function useMetronome() {
 
     setIsPlaying(true);
     current16thNoteRef.current = 0;
-    nextNoteTimeRef.current = 0.1;
+    nextNoteTimeRef.current = 0.1; // 给一点点缓冲时间
     scheduler();
 
-    // 使用 setInterval 调度器
+    // 使用 setInterval 调度器（lookahead scheduling）
     timerIDRef.current = setInterval(() => {
       scheduler();
     }, lookaheadRef.current);

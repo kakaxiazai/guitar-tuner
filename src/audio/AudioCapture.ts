@@ -1,28 +1,27 @@
 import { Audio } from 'expo-av';
-import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system';
+import { decode as base64Decode } from 'base-64';
+import { configureTunerAudioMode } from './AudioConfig';
 
 /** AudioCapture 配置 */
 export interface AudioCaptureConfig {
-  sampleRate: number;       // 采样率，默认 44100
-  numberOfChannels: number; // 声道数，默认 1（单声道）
-  bitDepth: number;         // 位深度，默认 16
-  segmentDurationMs: number;// 每段录制时长（毫秒），默认 100
-  isMeteringEnabled: boolean; // 是否启用音量计量，默认 true
+  sampleRate: number;
+  numberOfChannels: number;
+  bitDepth: number;
+  segmentDurationMs: number;
+  isMeteringEnabled: boolean;
 }
 
 /** AudioCapture 事件回调 */
 export interface AudioCaptureCallbacks {
-  /** 每次获取到音频数据时回调，参数为 Float32Array */
   onAudioData: (data: Float32Array) => void;
-  /** 音量变化回调，值为 -160 到 0 dBFS */
   onAudioLevel?: (level: number) => void;
-  /** 错误回调 */
   onError?: (error: Error) => void;
+  onPermissionRequired?: () => void;
 }
 
 /** AudioCapture 状态 */
-export type AudioCaptureState = 'idle' | 'requesting_permission' | 'preparing' | 'recording' | 'stopped' | 'error';
+export type AudioCaptureState = 'idle' | 'requesting_permission' | 'preparing' | 'recording' | 'stopped' | 'error' | 'permission_denied';
 
 export class AudioCapture {
   private recording: Audio.Recording | null = null;
@@ -32,6 +31,9 @@ export class AudioCapture {
   private recordingUri: string | null = null;
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private isDestroyed = false;
+
+  // 缓存权限状态，避免重复请求
+  private permissionCache: { granted: boolean; canAskAgain: boolean } | null = null;
 
   constructor(config?: Partial<AudioCaptureConfig>, callbacks?: AudioCaptureCallbacks) {
     this.config = {
@@ -45,27 +47,47 @@ export class AudioCapture {
     this.callbacks = callbacks || { onAudioData: () => {} };
   }
 
-  /** 获取当前状态 */
   getState(): AudioCaptureState {
     return this.state;
   }
 
-  /** 更新回调 */
   setCallbacks(callbacks: AudioCaptureCallbacks): void {
     this.callbacks = callbacks;
   }
 
   /**
-   * 请求麦克风权限
-   * Android: 使用 expo-av 的 requestPermissionsAsync（app.json 已配置 RECORD_AUDIO）
-   * iOS: 使用 expo-av 的 requestPermissionsAsync（app.json 已配置 NSMicrophoneUsageDescription）
+   * 请求麦克风权限 - 只请求一次，结果缓存
    */
   async requestPermission(): Promise<boolean> {
+    // 如果已经缓存了权限结果，直接返回
+    if (this.permissionCache !== null) {
+      return this.permissionCache.granted;
+    }
+
+    // 如果正在请求中，等待
+    if (this.state === 'requesting_permission') {
+      // 等待最多 2 秒
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      if (this.permissionCache !== null) {
+        return this.permissionCache.granted;
+      }
+      return false;
+    }
+
     this.state = 'requesting_permission';
     try {
-      const { granted } = await Audio.requestPermissionsAsync();
-      this.state = granted ? 'idle' : 'error';
-      return granted;
+      const { granted, canAskAgain } = await Audio.requestPermissionsAsync();
+      this.permissionCache = { granted, canAskAgain };
+
+      if (granted) {
+        this.state = 'idle';
+        return true;
+      } else {
+        this.state = 'permission_denied';
+        // 通知 UI 层显示权限说明
+        this.callbacks.onPermissionRequired?.();
+        return false;
+      }
     } catch (error) {
       this.state = 'error';
       this.callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
@@ -74,31 +96,34 @@ export class AudioCapture {
   }
 
   /**
-   * 开始音频采集（循环录制模式）
+   * 清除权限缓存（当用户从设置中返回时调用）
+   */
+  clearPermissionCache(): void {
+    this.permissionCache = null;
+    if (this.state === 'permission_denied') {
+      this.state = 'idle';
+    }
+  }
+
+  /**
+   * 开始音频采集
    */
   async start(): Promise<boolean> {
     if (this.isDestroyed) return false;
     if (this.state === 'recording') return true;
+    // 如果权限被拒绝，不再尝试
+    if (this.state === 'permission_denied') {
+      return false;
+    }
 
     try {
-      // 1. 请求权限
       const hasPermission = await this.requestPermission();
       if (!hasPermission) {
-        throw new Error('麦克风权限未授予');
+        // 不在这里抛错，让 UI 层处理
+        return false;
       }
 
-      // 2. 配置音频模式
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        staysActiveInBackground: false,
-        playsInSilentModeIOS: true,
-        interruptionModeIOS: 1, // DO_NOT_MIX
-        shouldDuckAndroid: true,
-        interruptionModeAndroid: 1, // DO_NOT_MIX
-        playThroughEarpieceAndroid: false,
-      });
-
-      // 3. 开始循环录制
+      await configureTunerAudioMode();
       await this.startRecordingCycle();
       return true;
     } catch (error) {
@@ -121,7 +146,7 @@ export class AudioCapture {
       try {
         await this.recording.stopAndUnloadAsync();
       } catch {
-        // 忽略停止时的错误
+        // 忽略
       }
       this.recording = null;
     }
@@ -138,7 +163,7 @@ export class AudioCapture {
   }
 
   /**
-   * 开始一个录制周期：录制短片段 -> 读取 PCM 数据 -> 回调 -> 清理 -> 下一个周期
+   * 开始录制循环
    */
   private async startRecordingCycle(): Promise<void> {
     const cycle = async () => {
@@ -147,22 +172,19 @@ export class AudioCapture {
       try {
         await this.recordSegment();
       } catch (error) {
-        this.callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
+        // 录制错误只记录，不弹窗（避免循环弹窗）
+        console.error('录制片段失败:', error);
       }
     };
 
-    // 立即执行第一次
     await cycle();
-
-    // 定时循环
     this.intervalId = setInterval(cycle, this.config.segmentDurationMs);
   }
 
   /**
-   * 录制一段音频并读取 PCM 数据
+   * 录制一段音频
    */
   private async recordSegment(): Promise<void> {
-    // 1. 准备并开始录制
     this.state = 'preparing';
     this.recording = new Audio.Recording();
 
@@ -172,30 +194,33 @@ export class AudioCapture {
       await this.recording.prepareToRecordAsync(recordingOptions);
     } catch (error) {
       this.recording = null;
-      throw error;
+      // prepareToRecordAsync 失败时等待一会再重试
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return;
     }
 
-    // 设置音量监测回调
     if (this.config.isMeteringEnabled && this.callbacks.onAudioLevel) {
       this.recording.setOnRecordingStatusUpdate((status: any) => {
         if (status.metering !== undefined) {
           this.callbacks.onAudioLevel?.(status.metering);
         }
       });
-      // 设置较快的轮询间隔以获取音量
       this.recording.setProgressUpdateInterval(50);
     }
 
-    // 2. 开始录制
     this.state = 'recording';
-    await this.recording.startAsync();
+    try {
+      await this.recording.startAsync();
+    } catch (error) {
+      this.recording = null;
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return;
+    }
 
-    // 3. 等待录制完成
     await new Promise(resolve =>
       setTimeout(resolve, this.config.segmentDurationMs)
     );
 
-    // 4. 停止录制
     const uri = this.recording.getURI();
     try {
       await this.recording.stopAndUnloadAsync();
@@ -204,7 +229,6 @@ export class AudioCapture {
     }
     this.recording = null;
 
-    // 5. 读取并解析 PCM 数据
     if (uri) {
       try {
         const pcmData = await this.readPCMDataFromFile(uri);
@@ -212,21 +236,17 @@ export class AudioCapture {
           this.callbacks.onAudioData(pcmData);
         }
       } catch (error) {
-        this.callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
+        console.error('读取PCM数据失败:', error);
       }
 
-      // 6. 清理临时文件
       try {
         await FileSystem.deleteAsync(uri, { idempotent: true });
       } catch {
-        // 忽略文件删除错误
+        // 忽略
       }
     }
   }
 
-  /**
-   * 获取录音配置（iOS 使用 LINEARPCM 以便直接解析）
-   */
   private getRecordingOptions() {
     return {
       isMeteringEnabled: this.config.isMeteringEnabled,
@@ -235,8 +255,8 @@ export class AudioCapture {
         sampleRate: this.config.sampleRate,
         numberOfChannels: this.config.numberOfChannels,
         bitRate: this.config.sampleRate * this.config.bitDepth * this.config.numberOfChannels,
-        outputFormat: 0, // DEFAULT
-        audioEncoder: 0, // DEFAULT
+        outputFormat: 0,
+        audioEncoder: 0,
       },
       ios: {
         extension: '.wav',
@@ -255,54 +275,38 @@ export class AudioCapture {
     };
   }
 
-  /**
-   * 从 WAV 文件中读取 PCM 数据并转换为 Float32Array
-   *
-   * WAV 文件结构：
-   * - Bytes 0-3:   "RIFF"
-   * - Bytes 4-7:   文件大小
-   * - Bytes 8-11:  "WAVE"
-   * - Bytes 12-15: "fmt "
-   * - Bytes 16-19: fmt chunk 大小
-   * - Bytes 20-35: 音频格式参数（采样率、声道数、位深度等）
-   * - Bytes 36-39: "data"
-   * - Bytes 40-43: data chunk 大小
-   * - Bytes 44+:   PCM 音频数据
-   */
   private async readPCMDataFromFile(uri: string): Promise<Float32Array> {
-    const fileInfo = await FileSystem.getInfoAsync(uri);
-    if (!fileInfo.exists) {
+    try {
+      const fileInfo = await FileSystem.getInfoAsync(uri);
+      if (!fileInfo.exists) {
+        return new Float32Array(0);
+      }
+
+      const base64Content = await FileSystem.readAsStringAsync(uri, {
+        encoding: 'base64',
+      });
+
+      const binaryString = base64Decode(base64Content);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      return this.parseWAVToFloat32(bytes, this.config.bitDepth);
+    } catch (error) {
+      console.error('读取音频文件失败:', error);
       return new Float32Array(0);
     }
-
-    // 读取整个文件为 base64
-    const base64Content = await FileSystem.readAsStringAsync(uri, {
-      encoding: 'base64',
-    });
-
-    // Base64 解码
-    const binaryString = atob(base64Content);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
-    }
-
-    // 解析 WAV 头部
-    return this.parseWAVToFloat32(bytes, this.config.bitDepth);
   }
 
-  /**
-   * 解析 WAV 二进制数据为 Float32Array
-   */
   private parseWAVToFloat32(bytes: Uint8Array, bitDepth: number): Float32Array {
-    // 查找 "data" chunk
     let dataOffset = -1;
     let dataSize = 0;
 
     for (let i = 0; i < bytes.length - 8; i++) {
       const chunkId = String.fromCharCode(bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]);
       if (chunkId === 'data') {
-        dataOffset = i + 8; // 跳过 "data" + 4 bytes size
+        dataOffset = i + 8;
         dataSize = bytes[i + 4] | (bytes[i + 5] << 8) | (bytes[i + 6] << 16) | (bytes[i + 7] << 24);
         break;
       }
@@ -312,25 +316,21 @@ export class AudioCapture {
       return new Float32Array(0);
     }
 
-    // 根据位深度解析
     const numSamples = dataSize / (bitDepth / 8);
     const float32Data = new Float32Array(numSamples);
     const maxAmplitude = Math.pow(2, bitDepth - 1);
 
     if (bitDepth === 16) {
-      // 16-bit signed integer (little-endian)
       for (let i = 0; i < numSamples; i++) {
         const offset = dataOffset + i * 2;
         const sample = bytes[offset] | (bytes[offset + 1] << 8);
-        // 转换有符号整数
         const signedSample = sample > 32767 ? sample - 65536 : sample;
         float32Data[i] = signedSample / maxAmplitude;
       }
     } else if (bitDepth === 32) {
-      // 32-bit float
       const dataView = new DataView(bytes.buffer, bytes.byteOffset + dataOffset, dataSize);
       for (let i = 0; i < numSamples; i++) {
-        float32Data[i] = dataView.getFloat32(i * 4, true); // little-endian
+        float32Data[i] = dataView.getFloat32(i * 4, true);
       }
     }
 

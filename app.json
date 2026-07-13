@@ -5,7 +5,7 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
     "splash": {
       "image": "./assets/splash.png",
       "resizeMode": "contain",
@@ -17,9 +17,11 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "此应用需要访问麦克风以进行吉他调音"
+        "NSMicrophoneUsageDescription": "此应用需要访问麦克风以进行吉他调音",
+        "UIBackgroundModes": []
       },
-      "bundleIdentifier": "com.guitartuner.app"
+      "bundleIdentifier": "com.kakaxiazai.guitartuner",
+      "buildNumber": "1.0.0"
     },
     "android": {
       "adaptiveIcon": {
@@ -27,12 +29,15 @@
         "backgroundColor": "#ffffff"
       },
       "permissions": [
-        "RECORD_AUDIO"
+        "RECORD_AUDIO",
+        "INTERNET"
       ],
-      "package": "com.kakaxiazai.guitartuner"
+      "package": "com.kakaxiazai.guitartuner",
+      "versionCode": 1
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
     },
     "extra": {
       "eas": {
@@ -40,7 +45,14 @@
       }
     },
     "plugins": [
-      "expo-font"
-    ]
+      "expo-font",
+      [
+        "expo-av",
+        {
+          "microphonePermission": "此应用需要访问麦克风以检测吉他音高"
+        }
+      ]
+    ],
+    "owner": "kakaxiazai"
   }
 }

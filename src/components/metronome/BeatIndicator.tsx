@@ -17,7 +17,7 @@ export default function BeatIndicator({ currentBeat, totalBeats, isPlaying }: Be
 
   // 播放节拍动画
   useEffect(() => {
-    if (isPlaying) {
+    if (isPlaying && currentBeat > 0) {
       // 重置所有节拍
       animations.current.forEach((anim, index) => {
         Animated.timing(anim, {
@@ -29,18 +29,20 @@ export default function BeatIndicator({ currentBeat, totalBeats, isPlaying }: Be
 
       // 高亮当前节拍
       const currentAnim = animations.current[currentBeat - 1];
-      Animated.sequence([
-        Animated.timing(currentAnim, {
-          toValue: 1.2,
-          duration: 100,
-          useNativeDriver: true,
-        }),
-        Animated.timing(currentAnim, {
-          toValue: 0.7,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-      ]).start();
+      if (currentAnim) {
+        Animated.sequence([
+          Animated.timing(currentAnim, {
+            toValue: 1.2,
+            duration: 100,
+            useNativeDriver: true,
+          }),
+          Animated.timing(currentAnim, {
+            toValue: 0.7,
+            duration: 200,
+            useNativeDriver: true,
+          }),
+        ]).start();
+      }
     }
   }, [currentBeat, isPlaying, totalBeats]);
 

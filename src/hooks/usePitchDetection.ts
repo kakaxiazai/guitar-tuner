@@ -1,21 +1,28 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { PitchDetector } from '../audio/PitchDetector';
 import { smoothFrequency } from '../utils/FrequencyUtils';
-import { getNoteFromFrequency } from '../utils/NoteUtils';
+import {
+  getNoteFromFrequency,
+  getCentsDeviation,
+  getTuningStatus,
+} from '../utils/NoteUtils';
 import { TUNER_CONFIG } from '../constants/Settings';
 
 /**
- * 音高检测 Hook
+ * 音高检测 Hook - 使用 YIN 算法
  * @returns 音高检测状态和方法
  */
 export function usePitchDetection() {
   const [frequency, setFrequency] = useState<number | null>(null);
   const [note, setNote] = useState<string>('');
   const [cents, setCents] = useState<number>(0);
-  const [status, setStatus] = useState<string>('error'); // 'perfect' | 'good' | 'warning' | 'error'
+  const [status, setStatus] = useState<string>('error');
+  const [confidence, setConfidence] = useState<number>(0);
 
   const pitchDetectorRef = useRef<PitchDetector | null>(null);
   const historyRef = useRef<number[]>([]);
+  // 用于平滑的置信度历史
+  const confidenceHistoryRef = useRef<number[]>([]);
 
   // 初始化音高检测器
   const initializePitchDetector = useCallback(() => {
@@ -27,25 +34,44 @@ export function usePitchDetection() {
   /**
    * 处理音频数据
    */
-  const processAudioData = useCallback((data: Float32Array) => {
+  const processAudioData = useCallback((data: Float32Array, targetFreq?: number, autoGainEnabled?: boolean): void => {
     if (!pitchDetectorRef.current) {
       return;
     }
 
-    // 检测频率
-    const detectedFreq = pitchDetectorRef.current.processAudioData(data);
+    // YIN 算法检测频率和置信度
+    const { frequency: detectedFreq, confidence: conf } = pitchDetectorRef.current.processAudioData(data, autoGainEnabled ?? false);
 
-    if (detectedFreq && detectedFreq >= TUNER_CONFIG.MIN_FREQ && detectedFreq <= TUNER_CONFIG.MAX_FREQ) {
-      // 平滑频率
+    // 置信度太低，忽略结果
+    if (!detectedFreq || conf < 0.4) {
+      setFrequency(null);
+      setNote('');
+      setCents(0);
+      setStatus('error');
+      setConfidence(conf);
+      return;
+    }
+
+    if (detectedFreq >= TUNER_CONFIG.MIN_FREQ && detectedFreq <= TUNER_CONFIG.MAX_FREQ) {
+      // 平滑频率（仅在置信度高时）
       const smoothedFreq = smoothFrequency(
         detectedFreq,
         historyRef.current,
         TUNER_CONFIG.SMOOTHING_WINDOW
       );
 
-      // 计算音分偏差（相对于 E4 = 329.63Hz）
-      const targetFreq = 329.63;
-      const centsDev = Math.round(1200 * Math.log2(smoothedFreq / targetFreq));
+      // 平滑置信度
+      confidenceHistoryRef.current.push(conf);
+      if (confidenceHistoryRef.current.length > 3) {
+        confidenceHistoryRef.current.shift();
+      }
+      const avgConfidence = confidenceHistoryRef.current.reduce((a, b) => a + b, 0) / confidenceHistoryRef.current.length;
+
+      // 计算目标频率
+      const targetFrequency = targetFreq ?? 329.63;
+
+      // 计算音分偏差
+      const centsDev = getCentsDeviation(smoothedFreq, targetFrequency);
 
       // 转换为音符
       const noteInfo = getNoteFromFrequency(smoothedFreq);
@@ -53,7 +79,8 @@ export function usePitchDetection() {
       // 更新状态
       setFrequency(smoothedFreq);
       setNote(`${noteInfo.note}${noteInfo.octave}`);
-      setCents(centsDev);
+      setCents(Math.round(centsDev));
+      setConfidence(Math.round(avgConfidence * 100));
 
       // 根据音分偏差设置状态
       const tuningStatus = getTuningStatus(Math.abs(centsDev));
@@ -65,26 +92,12 @@ export function usePitchDetection() {
         historyRef.current.shift();
       }
     } else {
-      // 频率无效，清除状态
+      // 频率超出范围
       setFrequency(null);
       setNote('');
       setCents(0);
       setStatus('error');
-    }
-  }, []);
-
-  /**
-   * 根据音分偏差设置调音状态
-   */
-  const getTuningStatus = useCallback((centsDev: number) => {
-    if (centsDev < TUNER_CONFIG.PERFECT_THRESHOLD) {
-      return 'perfect';
-    } else if (centsDev < TUNER_CONFIG.GOOD_THRESHOLD) {
-      return 'good';
-    } else if (centsDev < TUNER_CONFIG.WARNING_THRESHOLD) {
-      return 'warning';
-    } else {
-      return 'error';
+      setConfidence(conf);
     }
   }, []);
 
@@ -96,14 +109,9 @@ export function usePitchDetection() {
     setNote('');
     setCents(0);
     setStatus('error');
+    setConfidence(0);
     historyRef.current = [];
-  }, []);
-
-  /**
-   * 设置目标频率（用于手动调音模式）
-   */
-  const setTargetFrequency = useCallback((freq: number) => {
-    // 预留接口，暂不使用
+    confidenceHistoryRef.current = [];
   }, []);
 
   /**
@@ -113,6 +121,7 @@ export function usePitchDetection() {
     return () => {
       pitchDetectorRef.current = null;
       historyRef.current = [];
+      confidenceHistoryRef.current = [];
     };
   }, []);
 
@@ -121,8 +130,8 @@ export function usePitchDetection() {
     note,
     cents,
     status,
+    confidence,
     processAudioData,
     clear,
-    setTargetFrequency,
   };
 }
