@@ -52,6 +52,11 @@ ios/xcuserdata
 # EAS
 .easignore
 
+# 构建产物（APK/AAB，可随时从 EAS 重新下载）
+build_output/
+*.apk
+*.aab
+
 # 不要忽略 .workbuddy/memory（项目记忆）
 !.workbuddy
 .workbuddy/*
