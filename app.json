@@ -51,6 +51,18 @@
         {
           "microphonePermission": "此应用需要访问麦克风以检测吉他音高"
         }
+      ],
+      [
+        "@siteed/audio-studio",
+        {
+          "enablePhoneStateHandling": false,
+          "enableNotifications": false,
+          "enableBackgroundAudio": false,
+          "enableDeviceDetection": false,
+          "iosConfig": {
+            "microphoneUsageDescription": "此应用需要访问麦克风以检测吉他音高"
+          }
+        }
       ]
     ],
     "owner": "kakaxiazai"

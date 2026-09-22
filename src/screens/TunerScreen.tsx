@@ -7,7 +7,7 @@ import NoteDisplay from '../components/tuner/NoteDisplay';
 import StringSelector from '../components/tuner/StringSelector';
 import TunerModeSwitch from '../components/tuner/TunerModeSwitch';
 import { usePitchDetection } from '../hooks/usePitchDetection';
-import { AudioCapture } from '../audio/AudioCapture';
+import { useTunerAudioCapture } from '../hooks/useTunerAudioCapture';
 import { SoundGenerator } from '../audio/SoundGenerator';
 import { PitchDetector } from '../audio/PitchDetector';
 import { useSettings } from '../hooks/useSettings';
@@ -32,59 +32,45 @@ export default function TunerScreen() {
     clear,
   } = usePitchDetection();
 
-  const audioCaptureRef = useRef<AudioCapture | null>(null);
-  const [isCapturing, setIsCapturing] = useState<boolean>(false);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
-
-  const soundGeneratorRef = useRef(new SoundGenerator());
-  const errorShownRef = useRef(false);
-
-  // 初始化音频采集
-  useEffect(() => {
-    audioCaptureRef.current = new AudioCapture(
-      undefined,
-      {
-        onAudioData: (data: Float32Array) => {
-          const currentSettings = settingsRef.current;
-          const currentMode = modeRef.current;
-          const currentSelectedString = selectedStringRef.current;
-
-          if (currentMode === 'manual' && currentSelectedString) {
-            const strings = PitchDetector.getGuitarStrings();
-            const selected = strings.find(s => s.string === currentSelectedString);
-            processAudioData(data, selected?.frequency, currentSettings.autoGain);
-          } else {
-            processAudioData(data, undefined, currentSettings.autoGain);
-          }
-        },
-        onError: (error) => {
-          // 只在非权限错误时显示弹窗，避免循环
-          if (!error.message.includes('权限') && !error.message.includes('permission')) {
-            console.error('音频采集错误:', error);
-          }
-        },
-        onPermissionRequired: () => {
-          // 只显示一次权限弹窗
-          if (!errorShownRef.current) {
-            errorShownRef.current = true;
-            setPermissionDenied(true);
-          }
-        },
-      }
-    );
-
-    return () => {
-      if (audioCaptureRef.current) {
-        audioCaptureRef.current.release();
-      }
-    };
-  }, []);
-
   const modeRef = useRef(mode);
   modeRef.current = mode;
   const selectedStringRef = useRef(selectedString);
   selectedStringRef.current = selectedString;
+  const errorShownRef = useRef(false);
+
+  const soundGeneratorRef = useRef(new SoundGenerator());
+
+  // 音频采集（原始 PCM float32 流，跨平台可用）
+  const { isCapturing, start: startCapture, stop: stopCapture } = useTunerAudioCapture({
+    onAudioData: (data: Float32Array) => {
+      const currentSettings = settingsRef.current;
+      const currentMode = modeRef.current;
+      const currentSelectedString = selectedStringRef.current;
+
+      if (currentMode === 'manual' && currentSelectedString) {
+        const strings = PitchDetector.getGuitarStrings();
+        const selected = strings.find((s) => s.string === currentSelectedString);
+        processAudioData(data, selected?.frequency, currentSettings.autoGain);
+      } else {
+        processAudioData(data, undefined, currentSettings.autoGain);
+      }
+    },
+    onError: (error) => {
+      // 只在非权限错误时记录，避免噪音
+      if (!error.message.includes('权限') && !error.message.includes('permission')) {
+        console.error('音频采集错误:', error);
+      }
+    },
+    onPermissionRequired: () => {
+      // 只显示一次权限引导，避免重复弹窗
+      if (!errorShownRef.current) {
+        errorShownRef.current = true;
+        setPermissionDenied(true);
+      }
+    },
+  });
 
   // 处理音频数据并更新 UI
   useEffect(() => {
@@ -133,15 +119,10 @@ export default function TunerScreen() {
     errorShownRef.current = false;
     setPermissionDenied(false);
 
-    if (audioCaptureRef.current) {
-      // 清除权限缓存以重新请求
-      audioCaptureRef.current.clearPermissionCache();
-      const success = await audioCaptureRef.current.start();
-      setIsCapturing(success);
-      if (!success) {
-        setPermissionDenied(true);
-        errorShownRef.current = true;
-      }
+    const success = await startCapture();
+    if (!success) {
+      setPermissionDenied(true);
+      errorShownRef.current = true;
     }
   };
 
@@ -153,10 +134,7 @@ export default function TunerScreen() {
   // 开始/停止采集
   const toggleRecording = async () => {
     if (isCapturing) {
-      if (audioCaptureRef.current) {
-        await audioCaptureRef.current.stop();
-      }
-      setIsCapturing(false);
+      await stopCapture();
       clear();
       setFrequency(null);
       setNote('');
@@ -164,8 +142,7 @@ export default function TunerScreen() {
       errorShownRef.current = false;
     } else {
       errorShownRef.current = false;
-      const success = await audioCaptureRef.current?.start() || false;
-      setIsCapturing(success);
+      const success = await startCapture();
       if (!success) {
         setPermissionDenied(true);
         errorShownRef.current = true;
