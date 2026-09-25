@@ -1,0 +1,157 @@
+name: Android 云冒烟测试
+
+# 全云端验证：EAS 构建 APK → GitHub 云端模拟器安装 → 启动 → 截图 → 抓日志 → 崩溃判定
+# 不需要本地 Android SDK，也不需要真机。
+# 配置说明见仓库根目录 CLOUD_CI.md
+
+on:
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        description: '现成 APK 的下载地址（留空则触发一次新的 EAS 云端构建）'
+        required: false
+        default: ''
+        type: string
+  schedule:
+    # 每周一 03:00（北京时间，即周日 19:00 UTC）
+    - cron: '0 19 * * 0'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'app.json'
+      - 'package.json'
+      - 'patches/**'
+      - 'scripts/ci/**'
+      - '.github/workflows/android-smoke.yml'
+
+concurrency:
+  group: android-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    name: 获取 APK（EAS 云构建 / 直接下载）
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      source: ${{ steps.plan.outputs.source }}
+    steps:
+      - name: 判定 APK 来源
+        id: plan
+        env:
+          APK_URL: ${{ inputs.apk_url }}
+        run: |
+          if [ -n "$APK_URL" ]; then
+            echo "source=url" >> "$GITHUB_OUTPUT"
+            echo "来源：外部 URL"
+          else
+            echo "source=eas" >> "$GITHUB_OUTPUT"
+            echo "来源：EAS 云端构建"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.plan.outputs.source == 'eas'
+
+      - uses: actions/setup-node@v4
+        if: steps.plan.outputs.source == 'eas'
+        with:
+          node-version: 22
+
+      - name: 下载指定 APK
+        if: steps.plan.outputs.source == 'url'
+        env:
+          APK_URL: ${{ inputs.apk_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p apk
+          curl -fL --retry 3 --retry-delay 5 "$APK_URL" -o apk/app.apk
+          ls -lh apk/
+
+      - name: EAS 云端构建并下载产物
+        if: steps.plan.outputs.source == 'eas'
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPO_TOKEN:-}" ]; then
+            echo "::error::未配置 EXPO_TOKEN secret，无法触发 EAS 构建。配置方法见 CLOUD_CI.md"
+            exit 1
+          fi
+          npm i -g eas-cli@latest
+          eas --version
+          mkdir -p apk
+          eas build --platform android --profile preview --non-interactive --wait --json > build.json
+          node -e "const fs=require('fs');const b=JSON.parse(fs.readFileSync('build.json','utf8'));const r=Array.isArray(b)?b[b.length-1]:b;fs.writeFileSync('apk-url.txt',r.artifacts.applicationArchiveUrl)"
+          echo "产物地址: $(cat apk-url.txt)"
+          curl -fL --retry 3 --retry-delay 5 "$(cat apk-url.txt)" -o apk/app.apk
+          ls -lh apk/
+
+      - name: 上传 APK 供后续作业使用
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: apk/app.apk
+          retention-days: 14
+
+  smoke:
+    name: 云模拟器冒烟测试
+    needs: build-apk
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 取回 APK
+        uses: actions/download-artifact@v4
+        with:
+          name: apk
+          path: apk
+
+      - name: 启用 KVM 硬件加速
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: 运行模拟器冒烟测试
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: >-
+            -no-window -no-audio -no-boot-anim -no-snapshot
+            -gpu swiftshader_indirect -camera-back none -camera-front none
+          script: bash scripts/ci/emulator-smoke.sh apk/app.apk
+
+      - name: 上传冒烟证据（截图 / 日志 / 进程）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-evidence
+          path: smoke-out/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: 结果摘要
+        if: always()
+        run: |
+          {
+            echo "## Android 云冒烟测试"
+            echo ""
+            echo "- 触发来源: \`${{ github.event_name }}\`"
+            echo "- APK 来源: \`${{ needs.build-apk.outputs.source }}\`"
+            echo "- 安装: $(grep -c 'Success' smoke-out/install.txt 2>/dev/null || echo 0) 条 Success"
+            echo "- 进程: $(cat smoke-out/pid.txt 2>/dev/null || echo '无')"
+            echo ""
+            echo "证据见 artifact \`smoke-evidence\`（01-launch.png / 02-tuner-tab.png / logcat.txt）。"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,156 @@
+name: Android 云真机农场（Firebase Test Lab）
+
+# 在 Google 数据中心的真实/虚拟设备矩阵上安装并自动遍历应用，
+# 拿到「真硬件上不崩、能起来」的设备维度结论，全程不碰本地手机。
+#
+# 需要一次性配置：
+#   1) GCP 项目已启用 Firebase Test Lab（需绑定结算账号）
+#   2) 服务账号 JSON 存入仓库 secret：GCP_SA_KEY
+# 未配置时本流水线会给出提示并优雅跳过，不会让 CI 变红。
+# 详见仓库根目录 CLOUD_CI.md
+
+on:
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        description: '现成 APK 地址（留空则复用最近一次成功的「Android 云冒烟测试」产物）'
+        required: false
+        default: ''
+        type: string
+      device_matrix:
+        description: '设备矩阵，格式 型号:API,型号:API'
+        required: false
+        default: 'MediumPhone.arm:34,MediumPhone.arm:30'
+        type: string
+  schedule:
+    # 每周一 04:00（北京时间，即周日 20:00 UTC）
+    - cron: '0 20 * * 0'
+
+concurrency:
+  group: android-ftl-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  device-farm:
+    name: Firebase Test Lab 冒烟
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: 检查凭据是否已配置
+        id: cred
+        env:
+          SA: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          if [ -n "$SA" ]; then
+            echo "have=true" >> "$GITHUB_OUTPUT"
+            echo "已检测到 GCP_SA_KEY，开始云真机测试"
+          else
+            echo "have=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::未配置 secret GCP_SA_KEY，已跳过云真机农场。配置方法见 CLOUD_CI.md"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.cred.outputs.have == 'true'
+
+      - name: 取回 APK
+        id: apk
+        if: steps.cred.outputs.have == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APK_URL: ${{ inputs.apk_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p apk
+          if [ -n "$APK_URL" ]; then
+            echo "来源：外部 URL"
+            curl -fL --retry 3 --retry-delay 5 "$APK_URL" -o apk/app.apk
+          else
+            echo "来源：最近一次成功的「Android 云冒烟测试」产物"
+            RUN_ID="$(gh run list --workflow android-smoke.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId' || true)"
+            if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+              echo "::error::未找到可复用的 APK。请先手动运行「Android 云冒烟测试」，或在本流水线填入 apk_url。"
+              exit 1
+            fi
+            echo "复用 run id: $RUN_ID"
+            gh run download "$RUN_ID" -n apk -D apk
+          fi
+          ls -lh apk/
+          test -f apk/app.apk
+
+      - name: 认证到 Google Cloud
+        id: auth
+        if: steps.cred.outputs.have == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: 安装 gcloud
+        if: steps.cred.outputs.have == 'true'
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ steps.auth.outputs.project_id }}
+
+      - name: 在设备矩阵上运行 Robo 测试
+        if: steps.cred.outputs.have == 'true'
+        env:
+          DEVICE_MATRIX: ${{ inputs.device_matrix }}
+        run: |
+          set -euo pipefail
+          gcloud --quiet components install beta 2>/dev/null || true
+          IFLAGS=()
+          IFS=',' read -ra PAIRS <<< "${DEVICE_MATRIX:-MediumPhone.arm:34}"
+          for p in "${PAIRS[@]}"; do
+            m="${p%%:*}"; v="${p##*:}"
+            IFLAGS+=(--device "model=${m},version=${v},locale=zh_CN,orientation=portrait")
+            echo "设备: model=${m} version=${v}"
+          done
+          gcloud firebase test android run \
+            --type robo \
+            --app apk/app.apk \
+            --timeout 5m \
+            --num-flaky-test-attempts 0 \
+            "${IFLAGS[@]}" \
+            --format json > ftl-result.json
+          echo "---- 测试矩阵结果 ----"
+          jq -r '.testMatrix.state' ftl-result.json || cat ftl-result.json
+
+      - name: 判定结果
+        if: steps.cred.outputs.have == 'true'
+        run: |
+          set -uo pipefail
+          if [ ! -s ftl-result.json ]; then
+            echo "::error::未拿到 Firebase Test Lab 结果"
+            exit 1
+          fi
+          MATRIX="$(jq -r '.testMatrix.state' ftl-result.json)"
+          ID="$(jq -r '.testMatrix.testMatrixId' ftl-result.json)"
+          OUTCOMES="$(jq -r '[.testMatrix.testExecutions[].state] | unique | join(",")' ftl-result.json)"
+          echo "矩阵状态: $MATRIX"
+          echo "各设备结果: $OUTCOMES"
+          echo "控制台: https://console.firebase.google.com/project/_/testlab/histories"
+          echo "matrixId: $ID"
+          BAD="$(jq -r '[.testMatrix.testExecutions[] | select(.state != "PASSED" and .state != "VALIDATING" and .state != "PENDING")] | length' ftl-result.json)"
+          if [ "$MATRIX" != "FINISHED" ] || [ "$BAD" != "0" ]; then
+            echo "::error::云真机测试未全部通过（$OUTCOMES）"
+            jq -r '.testMatrix.testExecutions[] | "\(.testSpecification.androidRoboTest.appApkFile // "app") -> \(.state) \(.testDetails.errorMessage // "")"' ftl-result.json || true
+            exit 1
+          fi
+          echo "云真机测试通过：全部设备安装成功且运行未崩溃"
+
+      - name: 结果摘要
+        if: always()
+        run: |
+          {
+            echo "## Android 云真机农场"
+            echo ""
+            if [ "${{ steps.cred.outputs.have }}" != "true" ]; then
+              echo "未配置 \`GCP_SA_KEY\`，已跳过。配置方法见 \`CLOUD_CI.md\`。"
+            else
+              echo "- 设备矩阵: \`${{ inputs.device_matrix }}\`"
+              echo "- 产物: 见本流水线 artifacts 与 Firebase Test Lab 控制台"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
