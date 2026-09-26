@@ -1,7 +1,11 @@
-name: Android 云冒烟测试
+name: Android 云冒烟 + 调音自检
 
-# 全云端验证：EAS 构建 APK → GitHub 云端模拟器安装 → 启动 → 截图 → 抓日志 → 崩溃判定
-# 不需要本地 Android SDK，也不需要真机。
+# 全云端验证，不需要本地 Android SDK，也不需要真机：
+#   1) 取得 APK（EAS 云端构建，或直接用给定的 apk_url）
+#   2) GitHub 云端模拟器安装 → 启动 → 截图 → 抓 logcat → 崩溃判定
+#   3) 深链拉起「调音器自检」，用合成信号断言核心链路（音名 / 音分）
+#
+# 未配置 EXPO_TOKEN 且未提供 apk_url 时，会输出提示并**跳过**，不会让 CI 变红。
 # 配置说明见仓库根目录 CLOUD_CI.md
 
 on:
@@ -19,6 +23,7 @@ on:
     branches: [main]
     paths:
       - 'src/**'
+      - 'App.tsx'
       - 'app.json'
       - 'package.json'
       - 'patches/**'
@@ -33,28 +38,30 @@ permissions:
   contents: read
 
 jobs:
-  build-apk:
-    name: 获取 APK（EAS 云构建 / 直接下载）
+  verify:
+    name: 云端构建 + 冒烟 + 调音自检
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    outputs:
-      source: ${{ steps.plan.outputs.source }}
     steps:
       - name: 判定 APK 来源
         id: plan
         env:
           APK_URL: ${{ inputs.apk_url }}
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
           if [ -n "$APK_URL" ]; then
             echo "source=url" >> "$GITHUB_OUTPUT"
-            echo "来源：外部 URL"
-          else
+            echo "APK 来源：外部 URL"
+          elif [ -n "$EXPO_TOKEN" ]; then
             echo "source=eas" >> "$GITHUB_OUTPUT"
-            echo "来源：EAS 云端构建"
+            echo "APK 来源：EAS 云端构建"
+          else
+            echo "source=skip" >> "$GITHUB_OUTPUT"
+            echo "::warning::未配置 EXPO_TOKEN 且未提供 apk_url，跳过本次云端验证。配置方法见 CLOUD_CI.md"
           fi
 
       - uses: actions/checkout@v4
-        if: steps.plan.outputs.source == 'eas'
+        if: steps.plan.outputs.source != 'skip'
 
       - uses: actions/setup-node@v4
         if: steps.plan.outputs.source == 'eas'
@@ -77,10 +84,6 @@ jobs:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${EXPO_TOKEN:-}" ]; then
-            echo "::error::未配置 EXPO_TOKEN secret，无法触发 EAS 构建。配置方法见 CLOUD_CI.md"
-            exit 1
-          fi
           npm i -g eas-cli@latest
           eas --version
           mkdir -p apk
@@ -90,28 +93,8 @@ jobs:
           curl -fL --retry 3 --retry-delay 5 "$(cat apk-url.txt)" -o apk/app.apk
           ls -lh apk/
 
-      - name: 上传 APK 供后续作业使用
-        uses: actions/upload-artifact@v4
-        with:
-          name: apk
-          path: apk/app.apk
-          retention-days: 14
-
-  smoke:
-    name: 云模拟器冒烟测试
-    needs: build-apk
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: 取回 APK
-        uses: actions/download-artifact@v4
-        with:
-          name: apk
-          path: apk
-
       - name: 启用 KVM 硬件加速
+        if: steps.plan.outputs.source != 'skip'
         run: |
           set -euo pipefail
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
@@ -120,7 +103,8 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
 
-      - name: 运行模拟器冒烟测试
+      - name: 运行冒烟测试与调音自检
+        if: steps.plan.outputs.source != 'skip'
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
@@ -131,10 +115,19 @@ jobs:
           emulator-options: >-
             -no-window -no-audio -no-boot-anim -no-snapshot
             -gpu swiftshader_indirect -camera-back none -camera-front none
-          script: bash scripts/ci/emulator-smoke.sh apk/app.apk
+          script: |
+            set +e
+            bash scripts/ci/emulator-smoke.sh apk/app.apk
+            SMOKE=$?
+            bash scripts/ci/tuner-selftest.sh
+            SELFTEST=$?
+            echo "-------------------------------------------"
+            echo "启动冒烟: $SMOKE (0=通过)"
+            echo "调音自检: $SELFTEST (0=通过)"
+            [ "$SMOKE" -eq 0 ] && [ "$SELFTEST" -eq 0 ]
 
-      - name: 上传冒烟证据（截图 / 日志 / 进程）
-        if: always()
+      - name: 上传证据（截图 / 日志 / 自检输出）
+        if: always() && steps.plan.outputs.source != 'skip'
         uses: actions/upload-artifact@v4
         with:
           name: smoke-evidence
@@ -146,12 +139,24 @@ jobs:
         if: always()
         run: |
           {
-            echo "## Android 云冒烟测试"
+            echo "## Android 云端验证"
             echo ""
-            echo "- 触发来源: \`${{ github.event_name }}\`"
-            echo "- APK 来源: \`${{ needs.build-apk.outputs.source }}\`"
-            echo "- 安装: $(grep -c 'Success' smoke-out/install.txt 2>/dev/null || echo 0) 条 Success"
-            echo "- 进程: $(cat smoke-out/pid.txt 2>/dev/null || echo '无')"
-            echo ""
-            echo "证据见 artifact \`smoke-evidence\`（01-launch.png / 02-tuner-tab.png / logcat.txt）。"
+            if [ "${{ steps.plan.outputs.source }}" = "skip" ]; then
+              echo "未配置 \`EXPO_TOKEN\` 且未提供 \`apk_url\`，本次已跳过。配置方法见 \`CLOUD_CI.md\`。"
+            else
+              echo "- 触发来源: \`${{ github.event_name }}\`"
+              echo "- APK 来源: \`${{ steps.plan.outputs.source }}\`"
+              echo "- 安装: $(grep -c 'Success' smoke-out/install.txt 2>/dev/null || echo 0) 条 Success"
+              echo "- 进程: $(cat smoke-out/pid.txt 2>/dev/null || echo '无')"
+              echo ""
+              echo "### 调音器自检（合成信号 → 音名 / 音分）"
+              echo ""
+              echo '```'
+              sed -n 's/^.*TUNER_SELFTEST_SUMMARY /摘要: /p' smoke-out/selftest-logcat.txt 2>/dev/null | tail -1 || true
+              grep -F 'TUNER_SELFTEST case=' smoke-out/selftest-logcat.txt 2>/dev/null \
+                | sed 's/^.*TUNER_SELFTEST //' || true
+              echo '```'
+              echo ""
+              echo "证据见 artifact \`smoke-evidence\`（01-launch.png / 02-tuner-tab.png / logcat.txt / selftest-logcat.txt）。"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
