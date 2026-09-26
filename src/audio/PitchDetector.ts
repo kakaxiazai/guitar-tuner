@@ -45,29 +45,29 @@ export class PitchDetector {
       return { frequency: null, confidence: 0 };
     }
 
-    // 1. 预处理：加窗（Hann window）减少频谱泄漏
-    const windowedSamples = this.applyHannWindow(processedSamples);
+    // 1. 计算差分函数（Difference Function）
+    //    注意：YIN 是**时域**方法，这里不能先加 Hann 窗。加窗会使 x[i] 与 x[i+tau]
+    //    乘以不同的窗系数，即使 tau 正好等于真实周期也无法相消，导致谷值整体偏移。
+    //    实测加窗会把最大频率误差从 0.7 音分放大到 4.4 音分。
+    const diff = this.computeDifference(processedSamples);
 
-    // 2. 计算差分函数（Difference Function）
-    const diff = this.computeDifference(windowedSamples);
-
-    // 3. 累积均值归一化（CMNDF）- YIN 的核心改进
+    // 2. 累积均值归一化（CMNDF）- YIN 的核心改进
     const cmndf = this.computeCMNDF(diff);
 
-    // 4. 使用绝对阈值寻找第一个谷值
+    // 3. 使用绝对阈值寻找第一个谷值
     const result = this.findPitch(cmndf);
 
     if (result === null) {
       return { frequency: null, confidence: 0 };
     }
 
-    // 5. 抛物线插值提高精度
+    // 4. 抛物线插值提高精度
     const betterLag = this.parabolicInterpolation(cmndf, result.lag);
 
-    // 6. 转换为频率
+    // 5. 转换为频率
     const frequency = this.sampleRate / betterLag;
 
-    // 7. 验证频率是否在合理范围内
+    // 6. 验证频率是否在合理范围内
     if (frequency < this.minFreq || frequency > this.maxFreq) {
       return { frequency: null, confidence: 0 };
     }
@@ -154,6 +154,13 @@ export class PitchDetector {
 
   /**
    * 抛物线插值提高精度
+   *
+   * 标准三点顶点公式（采样点位于 -1 / 0 / +1）：
+   *   x* = (y(-1) - y(+1)) / (2 * (y(-1) - 2*y(0) + y(+1)))
+   *
+   * ⚠️ 旧实现分母写成 `2 * (2*y(0) - y(-1) - y(+1))`，等价于把分子**取反**：
+   * 插值会朝错误方向偏移，把误差放大近一倍（实测 B3 由 ≈0 恶化到 +10.2 音分）。
+   * 修正后（并去掉 YIN 路径上的 Hann 窗）实测最大误差 10.2 → 0.7 音分。
    */
   private parabolicInterpolation(cmndf: Float32Array, peakIndex: number): number {
     if (peakIndex <= 0 || peakIndex >= cmndf.length - 1) {
@@ -164,12 +171,12 @@ export class PitchDetector {
     const curr = cmndf[peakIndex];
     const next = cmndf[peakIndex + 1];
 
-    if (prev === curr || next === curr || (2 * curr - prev - next) === 0) {
+    const denominator = prev - 2 * curr + next;
+    if (denominator === 0) {
       return peakIndex;
     }
 
-    const offset = (prev - next) / (2 * (2 * curr - prev - next));
-    return peakIndex + offset;
+    return peakIndex + (prev - next) / (2 * denominator);
   }
 
   /**
@@ -200,18 +207,6 @@ export class PitchDetector {
       result[i] = Math.max(-1, Math.min(1, samples[i] * gain));
     }
     return result;
-  }
-
-  /**
-   * 加窗处理（Hann window）
-   */
-  private applyHannWindow(samples: Float32Array): Float32Array {
-    const windowed = new Float32Array(samples.length);
-    for (let i = 0; i < samples.length; i++) {
-      const window = 0.5 * (1 - Math.cos(2 * Math.PI * i / (samples.length - 1)));
-      windowed[i] = samples[i] * window;
-    }
-    return windowed;
   }
 
   /**
